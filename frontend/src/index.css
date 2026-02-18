@@ -1,0 +1,58 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
+  body {
+    @apply bg-brand-bg text-brand-text font-sans antialiased;
+  }
+
+  a {
+    @apply text-brand-text transition-colors duration-300 ease-luxury hover:text-brand-gold;
+  }
+}
+
+@layer components {
+  /* Main content container used across pages. */
+  .container-premium {
+    @apply container;
+  }
+
+  /* 12-column utility layout for dashboard and detail pages. */
+  .grid-12 {
+    @apply grid grid-cols-1 gap-3 md:grid-cols-12 md:gap-4;
+  }
+
+  /* Legacy alias mapped to new spacing utility. */
+  .section-shell {
+    @apply section-padding md:py-10;
+  }
+
+  /* Legacy alias mapped to plugin utility. */
+  .panel-glass {
+    @apply glass-panel rounded-xl;
+  }
+
+  /* Legacy alias mapped to plugin utility. */
+  .card-premium {
+    @apply premium-card;
+  }
+
+  /* Legacy alias mapped to plugin utility. */
+  .hover-glow {
+    @apply gold-glow-hover;
+  }
+
+  /* Primary call-to-action style for premium actions. */
+  .accent-button {
+    @apply inline-flex items-center justify-center rounded-lg bg-brand-gold px-3 py-1.5 text-sm font-semibold text-brand-bg shadow-glow transition-all duration-300 ease-luxury hover:brightness-110;
+  }
+}
