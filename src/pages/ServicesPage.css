@@ -1,0 +1,140 @@
+.services-page {
+  padding-top: 73px;
+  min-height: 100vh;
+}
+
+.services-hero {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
+  padding: 6rem 2rem;
+  text-align: center;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.services-hero h1 {
+  margin-bottom: 1rem;
+  font-size: 3.5rem;
+}
+
+.services-hero p {
+  font-size: 1.3rem;
+  color: var(--color-text-secondary);
+}
+
+.services-content {
+  padding: 5rem 2rem;
+}
+
+.service-category {
+  margin-bottom: 6rem;
+}
+
+.service-category:last-child {
+  margin-bottom: 0;
+}
+
+.category-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 3rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 2px solid var(--color-border);
+}
+
+.category-header svg {
+  color: var(--color-accent);
+}
+
+.category-header h2 {
+  margin: 0;
+}
+
+.services-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 2rem;
+}
+
+.service-card {
+  background: var(--color-card);
+  padding: 2.5rem;
+  border-radius: 12px;
+  border: 1px solid var(--color-border);
+  transition: all 0.3s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.service-card:hover {
+  transform: translateY(-5px);
+  border-color: var(--color-accent);
+  box-shadow: 0 15px 30px rgba(0, 0, 0, 0.3);
+}
+
+.service-card h3 {
+  margin-bottom: 1.5rem;
+  font-size: 1.4rem;
+}
+
+.service-details {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  padding: 1rem 0;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.service-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text-secondary);
+}
+
+.service-info svg {
+  color: var(--color-accent);
+}
+
+.service-price {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-accent);
+}
+
+.book-service-btn {
+  width: 100%;
+  padding: 1rem;
+  background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-dark) 100%);
+  color: var(--color-primary);
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin-top: auto;
+}
+
+.book-service-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(212, 175, 55, 0.4);
+}
+
+@media (max-width: 768px) {
+  .services-hero {
+    padding: 4rem 1.5rem;
+  }
+
+  .services-hero h1 {
+    font-size: 2.5rem;
+  }
+
+  .services-content {
+    padding: 3rem 1.5rem;
+  }
+
+  .services-grid {
+    grid-template-columns: 1fr;
+  }
+}
