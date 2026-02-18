@@ -1,6 +1,16 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  --color-luxury-black: #0a0a0a;
+  --color-luxury-darkgray: #1a1a1a;
+  --color-luxury-gray: #2a2a2a;
+  --color-luxury-amber: #d4af37;
+  --color-luxury-gold: #ffd700;
+  --color-luxury-lightamber: #f4d88a;
+  
+  --font-family-serif: Playfair Display, serif;
+  --font-family-sans: Inter, sans-serif;
+}
 
 @layer base {
   body {
