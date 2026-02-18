@@ -16,7 +16,7 @@ const { globalLimiter } = require("./middleware/rateLimiter");
 const { notFound, errorHandler, AppError } = require("./middleware/errorMiddleware");
 
 const app = express();
-const port = Number(process.env.PORT) || 5000;
+const port = process.env.PORT || 3000;
 const nodeEnv = process.env.NODE_ENV || "development";
 const isProduction = nodeEnv === "production";
 
