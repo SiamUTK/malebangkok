@@ -60,7 +60,7 @@ Premium Male Therapy & Elite Lifestyle Guide Platform in Bangkok. Secure, discre
 
 ### Prerequisites
 
-- Node.js (v16 or higher)
+- Node.js (v18 or higher)
 - npm or yarn
 
 ### Installation
