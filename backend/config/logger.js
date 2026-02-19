@@ -1,10 +1,19 @@
+const fs = require("fs");
 const path = require("path");
 const { createLogger, format, transports } = require("winston");
 
 const logLevel = process.env.LOG_LEVEL || "info";
-const logFilePath = path.join(__dirname, "..", "logs", "app.log");
+const logsDir = path.join(__dirname, "..", "logs");
+const logFilePath = path.join(logsDir, "combined.log");
+const accessLogFilePath = path.join(logsDir, "access.log");
 const errorLogFilePath = path.join(__dirname, "..", "logs", "error.log");
 const isProduction = (process.env.NODE_ENV || "development") === "production";
+
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir, { recursive: true });
+}
+
+const onlyAccessLogs = format((info) => (info.event === "access" ? info : false));
 
 const logger = createLogger({
   level: logLevel,
@@ -27,6 +36,10 @@ const logger = createLogger({
           ),
     }),
     new transports.File({ filename: logFilePath }),
+    new transports.File({
+      filename: accessLogFilePath,
+      format: format.combine(onlyAccessLogs(), format.timestamp(), format.json()),
+    }),
     new transports.File({ filename: errorLogFilePath, level: "error" }),
   ],
 });

@@ -5,7 +5,7 @@ const { AppError } = require("../middleware/errorMiddleware");
 
 async function register(req, res, next) {
   try {
-    const { fullName, email, password, phone, role } = req.body;
+    const { email, password, role } = req.body;
 
     const normalizedEmail = email.toLowerCase().trim();
     const existingUser = await findUserByEmail(normalizedEmail);
@@ -14,16 +14,14 @@ async function register(req, res, next) {
       return res.status(409).json({ message: "Email already in use" });
     }
 
-    const allowedRegistrationRoles = ["client", "guide"];
-    const userRole = allowedRegistrationRoles.includes(role) ? role : "client";
+    const allowedRegistrationRoles = ["user", "guide"];
+    const userRole = allowedRegistrationRoles.includes(role) ? role : "user";
 
     const passwordHash = await bcrypt.hash(password, 12);
     const userId = await createUser({
-      fullName: fullName.trim(),
       email: normalizedEmail,
       passwordHash,
       role: userRole,
-      phone,
     });
 
     const createdUser = await getUserSafeProfileById(userId);
@@ -67,10 +65,9 @@ async function login(req, res, next) {
       token,
       user: {
         id: user.id,
-        full_name: user.full_name,
         email: user.email,
-        phone: user.phone,
         role: user.role,
+        is_active: user.is_active,
       },
     });
   } catch (error) {

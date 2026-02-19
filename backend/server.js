@@ -3,16 +3,19 @@ const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
-const { v4: uuidv4 } = require("uuid");
+const hpp = require("hpp");
+const xssSanitizer = require("express-xss-sanitizer");
 
 const { checkDatabaseConnection } = require("./config/db");
 const logger = require("./config/logger");
+const { getHealth } = require("./controllers/healthController");
 const authRoutes = require("./routes/authRoutes");
 const guideRoutes = require("./routes/guideRoutes");
 const bookingRoutes = require("./routes/bookingRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const adminRoutes = require("./routes/adminRoutes");
-const { globalLimiter } = require("./middleware/rateLimiter");
+const { requestLogger } = require("./middleware/requestLogger");
+const { globalLimiter, authLimiter, adminLimiter } = require("./middleware/rateLimiter");
 const { notFound, errorHandler, AppError } = require("./middleware/errorMiddleware");
 
 const app = express();
@@ -33,16 +36,32 @@ const allowedOrigins = (process.env.CORS_ORIGIN || "")
 
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
-
-app.use((req, res, next) => {
-  req.requestId = uuidv4();
-  res.setHeader("X-Request-Id", req.requestId);
-  next();
-});
+app.use(requestLogger);
 
 app.use(
   helmet({
-    crossOriginResourcePolicy: { policy: "cross-origin" },
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        defaultSrc: ["'self'"],
+        baseUri: ["'self'"],
+        frameAncestors: ["'none'"],
+        objectSrc: ["'none'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", "https:"],
+      },
+    },
+    crossOriginResourcePolicy: { policy: "same-site" },
+    referrerPolicy: { policy: "no-referrer" },
+    hsts: isProduction
+      ? {
+          maxAge: 31536000,
+          includeSubDomains: true,
+          preload: true,
+        }
+      : false,
   })
 );
 
@@ -71,41 +90,15 @@ app.use(
 );
 
 app.use(globalLimiter);
+app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/register", authLimiter);
+app.use("/api/admin", adminLimiter);
 app.use("/api/payments/webhook", express.raw({ type: "application/json" }));
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
-
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on("finish", () => {
-    logger.info("http_request", {
-      requestId: req.requestId,
-      method: req.method,
-      path: req.originalUrl,
-      statusCode: res.statusCode,
-      durationMs: Date.now() - start,
-      ip: req.ip,
-      userAgent: req.get("user-agent") || null,
-      userId: req.user?.id || null,
-    });
-  });
-  next();
-});
-
-app.get("/api/health", async (req, res, next) => {
-  try {
-    await checkDatabaseConnection();
-    res.status(200).json({
-      status: "ok",
-      service: "malebangkok-api",
-      environment: nodeEnv,
-      uptimeSeconds: Math.floor(process.uptime()),
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+app.use(hpp());
+app.use(xssSanitizer());
+app.get("/api/health", getHealth);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/guides", guideRoutes);

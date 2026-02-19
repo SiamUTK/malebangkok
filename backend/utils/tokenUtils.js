@@ -1,14 +1,12 @@
 const jwt = require("jsonwebtoken");
-const { v4: uuidv4 } = require("uuid");
 
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
+const JWT_EXPIRES_IN = "7d";
 
 function buildTokenPayload(user) {
   return {
     id: user.id,
     email: user.email,
     role: user.role,
-    jti: uuidv4(),
   };
 }
 

@@ -1,4 +1,5 @@
 const logger = require("../config/logger");
+const { sendCriticalAlert } = require("../services/alertService");
 
 class AppError extends Error {
   constructor(message, statusCode = 500, details = null) {
@@ -18,18 +19,9 @@ function notFound(req, res) {
 }
 
 function errorHandler(err, req, res, next) {
+  const isProduction = (process.env.NODE_ENV || "development") === "production";
   const statusCode =
     err.statusCode || (res.statusCode >= 400 ? res.statusCode : 500);
-
-  // 🔥 DEBUG MODE: แสดง error จริงทั้งหมด
-  console.error("==== ERROR START ====");
-  console.error("Request ID:", req.requestId);
-  console.error("Path:", req.originalUrl);
-  console.error("Method:", req.method);
-  console.error("Message:", err.message);
-  console.error("Stack:", err.stack);
-  console.error("Details:", err.details);
-  console.error("==== ERROR END ====");
 
   logger.error("Request failed", {
     requestId: req.requestId,
@@ -41,11 +33,41 @@ function errorHandler(err, req, res, next) {
     details: err.details || null,
   });
 
+  if (statusCode >= 500) {
+    Promise.resolve(
+      sendCriticalAlert({
+        requestId: req.requestId || null,
+        statusCode,
+        method: req.method,
+        path: req.originalUrl,
+        message: err.message,
+        userId: req.user?.id || null,
+        ip: req.ip || null,
+      })
+    ).catch((alertError) => {
+      logger.error("critical_alert_dispatch_failed", {
+        requestId: req.requestId || null,
+        message: alertError.message,
+      });
+    });
+  }
+
+  if (!isProduction) {
+    console.error("==== ERROR START ====");
+    console.error("Request ID:", req.requestId);
+    console.error("Path:", req.originalUrl);
+    console.error("Method:", req.method);
+    console.error("Message:", err.message);
+    console.error("Stack:", err.stack);
+    console.error("Details:", err.details);
+    console.error("==== ERROR END ====");
+  }
+
   res.status(statusCode).json({
-    message: err.message || "Internal server error",
+    message: isProduction && statusCode >= 500 ? "Internal server error" : err.message || "Internal server error",
     requestId: req.requestId || null,
-    details: err.details || null,
-    stack: err.stack || null,
+    details: isProduction ? null : err.details || null,
+    stack: isProduction ? null : err.stack || null,
   });
 }
 

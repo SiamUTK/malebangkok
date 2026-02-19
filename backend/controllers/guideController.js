@@ -3,9 +3,11 @@ const {
   getAllGuides,
   getGuideById,
   getGuidesForMatching,
+  updateGuideById,
+  deleteGuideById,
 } = require("../models/guideModel");
 const { findUserById } = require("../models/userModel");
-const { rankGuidesForUser } = require("../services/aiMatchingService");
+const { rankGuidesForUser, normalizePreferences } = require("../services/aiMatchingService");
 const { AppError } = require("../middleware/errorMiddleware");
 
 async function createGuideHandler(req, res, next) {
@@ -79,9 +81,71 @@ async function getGuideByIdHandler(req, res, next) {
 
 async function getRecommendedGuidesHandler(req, res, next) {
   try {
+    const preferences = normalizePreferences(req.body || {});
     const guides = await getGuidesForMatching();
-    const ranked = rankGuidesForUser(req.body || {}, guides);
-    return res.status(200).json({ guides: ranked });
+    const ranked = rankGuidesForUser(preferences, guides);
+
+    return res.status(200).json({
+      guides: ranked,
+      meta: {
+        totalCandidates: Array.isArray(guides) ? guides.length : 0,
+        returned: ranked.length,
+        limit: preferences.limit,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function updateGuideHandler(req, res, next) {
+  try {
+    const guideId = Number(req.params.id);
+    const { name, bio, basePrice, age, verified } = req.body;
+
+    if (!Number.isInteger(guideId) || guideId <= 0) {
+      throw new AppError("Guide id must be a positive number", 400);
+    }
+
+    const normalizedPrice = Number(basePrice);
+    if (!Number.isFinite(normalizedPrice) || normalizedPrice <= 0) {
+      throw new AppError("basePrice must be a positive number", 400);
+    }
+
+    const updated = await updateGuideById(guideId, {
+      name: name.trim(),
+      bio: bio.trim(),
+      basePrice: normalizedPrice,
+      age: age || null,
+      verified: Boolean(verified),
+    });
+
+    if (!updated) {
+      throw new AppError("Guide not found", 404);
+    }
+
+    const guide = await getGuideById(guideId);
+    return res.status(200).json({ message: "Guide updated successfully", guide });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function deleteGuideHandler(req, res, next) {
+  try {
+    const guideId = Number(req.params.id);
+
+    if (!Number.isInteger(guideId) || guideId <= 0) {
+      throw new AppError("Guide id must be a positive number", 400);
+    }
+
+    const deleted = await deleteGuideById(guideId);
+
+    if (!deleted) {
+      throw new AppError("Guide not found", 404);
+    }
+
+    return res.status(200).json({ message: "Guide deleted successfully" });
   } catch (error) {
     return next(error);
   }
@@ -92,4 +156,6 @@ module.exports = {
   getGuidesHandler,
   getGuideByIdHandler,
   getRecommendedGuidesHandler,
+  updateGuideHandler,
+  deleteGuideHandler,
 };

@@ -54,9 +54,47 @@ async function getGuidesForMatching() {
   return query(sql);
 }
 
+async function updateGuideById(id, { name, bio, basePrice, age, verified }) {
+  const sql = `
+    UPDATE guides
+    SET name = ?,
+        bio = ?,
+        price_per_hour = ?,
+        age = ?,
+        verified = ?,
+        created_at = created_at
+    WHERE id = ?
+    LIMIT 1
+  `;
+
+  const result = await query(sql, [
+    name,
+    bio,
+    basePrice,
+    age,
+    verified ? 1 : 0,
+    id,
+  ]);
+
+  return result.affectedRows > 0;
+}
+
+async function deleteGuideById(id) {
+  const sql = `
+    DELETE FROM guides
+    WHERE id = ?
+    LIMIT 1
+  `;
+
+  const result = await query(sql, [id]);
+  return result.affectedRows > 0;
+}
+
 module.exports = {
   createGuide,
   getAllGuides,
   getGuideById,
   getGuidesForMatching,
+  updateGuideById,
+  deleteGuideById,
 };
