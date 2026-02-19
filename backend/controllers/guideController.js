@@ -2,13 +2,24 @@ const {
   createGuide,
   getAllGuides,
   getGuideById,
-  getGuidesForMatching,
+  getGuidesForMatchingPrefilter,
   updateGuideById,
   deleteGuideById,
 } = require("../models/guideModel");
 const { findUserById } = require("../models/userModel");
 const { rankGuidesForUser, normalizePreferences } = require("../services/aiMatchingService");
 const { AppError } = require("../middleware/errorMiddleware");
+const logger = require("../config/logger");
+const { getCache, setCache, buildCacheKey } = require("../utils/cache");
+const {
+  invalidateGuideList,
+  invalidateGuide,
+  invalidateMatching,
+} = require("../services/cacheInvalidationService");
+
+const GUIDES_LIST_CACHE_TTL_SECONDS = Number(process.env.GUIDES_LIST_CACHE_TTL_SECONDS || 60);
+const GUIDES_MATCH_CACHE_TTL_SECONDS = Number(process.env.GUIDES_MATCH_CACHE_TTL_SECONDS || 45);
+const GUIDES_MATCH_CACHE_MIN_CANDIDATES = Number(process.env.GUIDES_MATCH_CACHE_MIN_CANDIDATES || 120);
 
 async function createGuideHandler(req, res, next) {
   try {
@@ -41,6 +52,12 @@ async function createGuideHandler(req, res, next) {
 
     const guide = await getGuideById(guideId);
 
+    await Promise.allSettled([
+      invalidateGuideList(),
+      invalidateMatching(),
+      invalidateGuide(guideId),
+    ]);
+
     return res.status(201).json({
       message: "Guide created successfully",
       guide,
@@ -52,8 +69,49 @@ async function createGuideHandler(req, res, next) {
 
 async function getGuidesHandler(req, res, next) {
   try {
-    const guides = await getAllGuides();
-    return res.status(200).json({ guides });
+    const page = Number(req.query.page || 1);
+    const requestedLimit = Number(req.query.limit || 20);
+    const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 50) : 20;
+    const verifiedOnly = req.query.verifiedOnly;
+    const city = typeof req.query.city === "string" ? req.query.city.trim() : "";
+
+    const cacheKey = buildCacheKey("guides:list", {
+      page: Number.isFinite(page) && page > 0 ? Math.trunc(page) : 1,
+      limit,
+      verifiedOnly: typeof verifiedOnly === "undefined" ? null : verifiedOnly,
+      city: city || null,
+    });
+
+    const cached = await getCache(cacheKey);
+    if (cached && Array.isArray(cached.data) && cached.pagination) {
+      return res.status(200).json({
+        data: cached.data,
+        pagination: cached.pagination,
+        guides: cached.data,
+      });
+    }
+
+    const result = await getAllGuides({
+      page: Number.isFinite(page) && page > 0 ? Math.trunc(page) : 1,
+      limit,
+      verifiedOnly,
+      city: city || null,
+    });
+
+    await setCache(
+      cacheKey,
+      {
+        data: result.data,
+        pagination: result.pagination,
+      },
+      GUIDES_LIST_CACHE_TTL_SECONDS
+    );
+
+    return res.status(200).json({
+      data: result.data,
+      pagination: result.pagination,
+      guides: result.data,
+    });
   } catch (error) {
     return next(error);
   }
@@ -81,18 +139,46 @@ async function getGuideByIdHandler(req, res, next) {
 
 async function getRecommendedGuidesHandler(req, res, next) {
   try {
-    const preferences = normalizePreferences(req.body || {});
-    const guides = await getGuidesForMatching();
-    const ranked = rankGuidesForUser(preferences, guides);
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      throw new AppError("Invalid matching payload", 400);
+    }
 
-    return res.status(200).json({
+    const preferences = normalizePreferences(req.body || {});
+    const matchCacheKey = buildCacheKey("guides:match", preferences);
+
+    const personalizationConfidence = Number(req.body?.personalizationConfidence || 0);
+    const highlyPersonalized =
+      req.body?.personalized === true ||
+      Boolean(req.body?.userPreferenceProfileId) ||
+      personalizationConfidence >= 0.7;
+
+    const eligibleForCache = !highlyPersonalized;
+    if (eligibleForCache) {
+      const cached = await getCache(matchCacheKey);
+      if (cached && Array.isArray(cached.guides) && cached.meta) {
+        return res.status(200).json(cached);
+      }
+    }
+
+    const prefiltered = await getGuidesForMatchingPrefilter(preferences);
+    const ranked = rankGuidesForUser(preferences, prefiltered.guides || []);
+
+    const responsePayload = {
       guides: ranked,
       meta: {
-        totalCandidates: Array.isArray(guides) ? guides.length : 0,
+        candidatesEvaluated: Array.isArray(prefiltered.guides) ? prefiltered.guides.length : 0,
         returned: ranked.length,
-        limit: preferences.limit,
+        filtersApplied: prefiltered.filtersApplied,
       },
-    });
+    };
+
+    // Short-lived cache for broad/non-personalized traffic only.
+    // Personal user-specific ranking should bypass cache to avoid stale personalization.
+    if (eligibleForCache && responsePayload.meta.candidatesEvaluated >= GUIDES_MATCH_CACHE_MIN_CANDIDATES) {
+      await setCache(matchCacheKey, responsePayload, GUIDES_MATCH_CACHE_TTL_SECONDS);
+    }
+
+    return res.status(200).json(responsePayload);
   } catch (error) {
     return next(error);
   }
@@ -125,6 +211,22 @@ async function updateGuideHandler(req, res, next) {
     }
 
     const guide = await getGuideById(guideId);
+
+    await Promise.allSettled([
+      invalidateGuideList(),
+      invalidateMatching(),
+      invalidateGuide(guideId),
+    ]).then((results) => {
+      const rejected = results.filter((item) => item.status === "rejected");
+      if (rejected.length > 0) {
+        logger.warn("cache_invalidation_partial_failure", {
+          event: "cache_invalidation_partial_failure",
+          guideId,
+          rejectedCount: rejected.length,
+        });
+      }
+    });
+
     return res.status(200).json({ message: "Guide updated successfully", guide });
   } catch (error) {
     return next(error);
@@ -144,6 +246,12 @@ async function deleteGuideHandler(req, res, next) {
     if (!deleted) {
       throw new AppError("Guide not found", 404);
     }
+
+    await Promise.allSettled([
+      invalidateGuideList(),
+      invalidateMatching(),
+      invalidateGuide(guideId),
+    ]);
 
     return res.status(200).json({ message: "Guide deleted successfully" });
   } catch (error) {

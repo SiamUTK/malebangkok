@@ -56,6 +56,101 @@ async function createBooking({
   return result.insertId;
 }
 
+async function createBookingAtomic(payload, connection) {
+  if (!connection || typeof connection.execute !== "function") {
+    throw new Error("createBookingAtomic requires an active mysql2 transaction connection");
+  }
+
+  const {
+    userId,
+    guideId,
+    bookingDate,
+    durationHours,
+    totalPrice,
+    baseAmount,
+    peakAmount,
+    weekendAmount,
+    premiumAmount,
+    premiumOptions,
+    status = "pending",
+    notes = null,
+  } = payload || {};
+
+  const normalizedGuideId = Number(guideId);
+  const normalizedDurationHours = Number(durationHours);
+  const durationMinutes = Math.round(normalizedDurationHours * 60);
+
+  if (!Number.isFinite(normalizedGuideId) || normalizedGuideId <= 0) {
+    throw new Error("Invalid guideId for createBookingAtomic");
+  }
+
+  if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+    throw new Error("Invalid durationHours for createBookingAtomic");
+  }
+
+  if (!bookingDate) {
+    throw new Error("bookingDate is required for createBookingAtomic");
+  }
+
+  // Guard lock for empty-overlap result: serializes booking creation per guide.
+  await connection.execute(
+    `
+      SELECT id
+      FROM guides
+      WHERE id = ?
+      LIMIT 1
+      FOR UPDATE
+    `,
+    [normalizedGuideId]
+  );
+
+  const [conflictRows] = await connection.execute(
+    `
+      SELECT id
+      FROM bookings
+      WHERE guide_id = ?
+        AND status IN ('pending', 'confirmed')
+        AND booking_date < DATE_ADD(?, INTERVAL ? MINUTE)
+        AND booking_end_date > ?
+      FOR UPDATE
+    `,
+    [normalizedGuideId, bookingDate, durationMinutes, bookingDate]
+  );
+
+  if (conflictRows.length > 0) {
+    const conflictError = new Error("Selected time slot is not available");
+    conflictError.code = "BOOKING_CONFLICT";
+    throw conflictError;
+  }
+
+  const [result] = await connection.execute(
+    `
+      INSERT INTO bookings (
+        user_id, guide_id, booking_date, duration_hours, total_price,
+        base_amount, peak_amount, weekend_amount, premium_amount, premium_options,
+        status, notes
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      userId,
+      normalizedGuideId,
+      bookingDate,
+      normalizedDurationHours,
+      totalPrice,
+      baseAmount,
+      peakAmount,
+      weekendAmount,
+      premiumAmount,
+      premiumOptions ? JSON.stringify(premiumOptions) : null,
+      status,
+      notes,
+    ]
+  );
+
+  return result.insertId;
+}
+
 async function getBookingsByUser(userId) {
   const sql = `
     SELECT
@@ -129,6 +224,7 @@ async function markBookingAsConfirmed(bookingId) {
 module.exports = {
   hasGuideBookingConflict,
   createBooking,
+  createBookingAtomic,
   getBookingsByUser,
   updateBookingStatus,
   getBookingById,

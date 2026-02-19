@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import api from "../api/axios";
 import { useAuth } from "../context/AuthContext";
 
 export default function Register() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { login } = useAuth();
 
   const [form, setForm] = useState({ fullName: "", email: "", password: "" });
@@ -24,7 +25,8 @@ export default function Register() {
     try {
       const response = await api.post("/auth/register", form);
       login(response.data.token, response.data.user);
-      navigate("/booking-flow");
+      const redirectTo = location.state?.from || "/";
+      navigate(redirectTo, { replace: true });
     } catch (err) {
       setError(err.response?.data?.message || "Registration failed.");
     } finally {

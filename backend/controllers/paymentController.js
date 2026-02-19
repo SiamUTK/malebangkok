@@ -1,16 +1,31 @@
 const nodemailer = require("nodemailer");
 const { stripe, stripeWebhookSecret } = require("../config/stripe");
 const logger = require("../config/logger");
+const { pool } = require("../config/db");
 const { AppError } = require("../middleware/errorMiddleware");
-const { getBookingById, setBookingPaymentIntent, markBookingAsConfirmed } = require("../models/bookingModel");
-const {
-  createPaymentRecord,
-  updatePaymentStatusByIntent,
-  getPaymentByIntentId,
-} = require("../models/paymentModel");
+const { getBookingById } = require("../models/bookingModel");
+const { updatePaymentStatusByIntent } = require("../models/paymentModel");
 const { calculateCommission } = require("../services/commissionService");
-const { upsertCommissionByBooking } = require("../models/commissionModel");
+const {
+  hasPaymentSucceeded,
+  markPaymentProcessingAtomic,
+  safeIdempotentExit,
+} = require("../services/paymentIdempotencyService");
+const { createOrReusePaymentIntentAtomic } = require("../services/paymentIntentService");
 const { findUserById } = require("../models/userModel");
+
+const MAX_WEBHOOK_TX_RETRIES = 3;
+const RETRIABLE_DB_ERROR_CODES = new Set(["ER_LOCK_DEADLOCK", "ER_LOCK_WAIT_TIMEOUT"]);
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isRetriableDbError(error) {
+  return RETRIABLE_DB_ERROR_CODES.has(error?.code);
+}
 
 function getTransporter() {
   if (!process.env.SMTP_HOST) {
@@ -67,34 +82,29 @@ async function createPaymentIntentHandler(req, res, next) {
       throw new AppError("Only pending bookings can be paid", 409);
     }
 
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(Number(booking.total_price) * 100),
+    const paymentIntentState = await createOrReusePaymentIntentAtomic({
+      bookingId: booking.id,
+      amount: booking.total_price,
       currency: "thb",
       metadata: {
         bookingId: String(booking.id),
         userId: String(booking.user_id),
         guideId: String(booking.guide_id),
       },
-      automatic_payment_methods: {
-        enabled: true,
-      },
     });
 
-    await setBookingPaymentIntent(booking.id, paymentIntent.id);
-    await createPaymentRecord({
+    logger.info("payment_intent_ready", {
+      event: "payment_intent_ready",
       bookingId: booking.id,
-      userId: booking.user_id,
-      guideId: booking.guide_id,
-      amount: booking.total_price,
-      currency: "thb",
-      stripePaymentIntentId: paymentIntent.id,
-      status: paymentIntent.status || "requires_action",
+      userId: req.user?.id,
+      paymentIntentId: paymentIntentState.paymentIntentId,
+      reused: paymentIntentState.reused,
     });
 
     return res.status(201).json({
       message: "Payment intent created",
-      clientSecret: paymentIntent.client_secret,
-      paymentIntentId: paymentIntent.id,
+      clientSecret: paymentIntentState.clientSecret,
+      paymentIntentId: paymentIntentState.paymentIntentId,
     });
   } catch (error) {
     return next(error);
@@ -118,30 +128,182 @@ async function stripeWebhookHandler(req, res, next) {
       const paymentIntent = event.data.object;
       const bookingId = Number(paymentIntent.metadata.bookingId);
 
-      const payment = await getPaymentByIntentId(paymentIntent.id);
-      if (payment) {
-        await updatePaymentStatusByIntent(paymentIntent.id, "succeeded", paymentIntent);
-        await markBookingAsConfirmed(bookingId);
-
-        const commission = calculateCommission({ bookingTotal: payment.amount });
-        await upsertCommissionByBooking({
-          bookingId: payment.booking_id,
-          guideId: payment.guide_id,
-          grossAmount: payment.amount,
-          platformRate: commission.platformRate,
-          platformAmount: commission.platformAmount,
-          guideAmount: commission.guideAmount,
-          status: "settled",
+      const preCheck = await hasPaymentSucceeded(paymentIntent.id);
+      if (preCheck.succeeded) {
+        safeIdempotentExit({
+          paymentIntentId: paymentIntent.id,
+          bookingId,
+          eventType: event.type,
+          reason: "payment_already_succeeded_precheck",
         });
-
-        const user = await findUserById(payment.user_id);
-        const email = user?.email;
-        await sendBookingPaidEmail({
-          to: email,
-          bookingId: payment.booking_id,
-          amount: payment.amount,
-        });
+        return res.status(200).json({ received: true });
       }
+
+      let committedPayment = null;
+
+      for (let attempt = 1; attempt <= MAX_WEBHOOK_TX_RETRIES; attempt += 1) {
+        let connection;
+        try {
+          connection = await pool.getConnection();
+          await connection.beginTransaction();
+
+          // Row locks serialize retries/concurrent deliveries for the same payment+booking.
+          const idempotencyState = await markPaymentProcessingAtomic({
+            connection,
+            paymentIntentId: paymentIntent.id,
+            bookingIdFromMetadata: bookingId,
+          });
+
+          if (idempotencyState.shouldExit) {
+            await connection.rollback();
+            safeIdempotentExit({
+              paymentIntentId: paymentIntent.id,
+              bookingId,
+              eventType: event.type,
+              reason: idempotencyState.reason,
+              attempt,
+            });
+            return res.status(200).json({ received: true });
+          }
+
+          const payment = idempotencyState.payment;
+          const commission = calculateCommission({ bookingTotal: payment.amount });
+
+          await connection.execute(
+            `
+              UPDATE payments
+              SET status = 'succeeded',
+                  provider_payload = ?,
+                  updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `,
+            [JSON.stringify(paymentIntent), payment.id]
+          );
+
+          await connection.execute(
+            `
+              UPDATE bookings
+              SET status = 'confirmed',
+                  payment_status = 'paid',
+                  updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `,
+            [payment.booking_id]
+          );
+
+          // Lock existing commission row (if any) to prevent duplicate settlement writes.
+          await connection.execute(
+            `
+              SELECT id
+              FROM commissions
+              WHERE booking_id = ?
+              LIMIT 1
+              FOR UPDATE
+            `,
+            [payment.booking_id]
+          );
+
+          await connection.execute(
+            `
+              INSERT INTO commissions (
+                booking_id,
+                guide_id,
+                gross_amount,
+                platform_rate,
+                platform_amount,
+                guide_amount,
+                status
+              )
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+              ON DUPLICATE KEY UPDATE
+                gross_amount = VALUES(gross_amount),
+                platform_rate = VALUES(platform_rate),
+                platform_amount = VALUES(platform_amount),
+                guide_amount = VALUES(guide_amount),
+                status = VALUES(status),
+                updated_at = CURRENT_TIMESTAMP
+            `,
+            [
+              payment.booking_id,
+              payment.guide_id,
+              payment.amount,
+              commission.platformRate,
+              commission.platformAmount,
+              commission.guideAmount,
+              "settled",
+            ]
+          );
+
+          try {
+            await connection.execute(
+              `
+                INSERT INTO guide_performance_stats (guide_id, total_bookings, last_booked, last_updated)
+                VALUES (?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON DUPLICATE KEY UPDATE
+                  total_bookings = total_bookings + 1,
+                  last_booked = CURRENT_TIMESTAMP,
+                  last_updated = CURRENT_TIMESTAMP
+              `,
+              [String(payment.guide_id)]
+            );
+          } catch (statsError) {
+            if (statsError.code !== "ER_NO_SUCH_TABLE") {
+              throw statsError;
+            }
+
+            logger.warn("guide_performance_stats_table_missing", {
+              event: "guide_performance_stats_table_missing",
+              paymentIntentId: paymentIntent.id,
+              bookingId: payment.booking_id,
+            });
+          }
+
+          await connection.commit();
+          committedPayment = payment;
+          break;
+        } catch (error) {
+          if (connection) {
+            try {
+              await connection.rollback();
+            } catch (rollbackError) {
+              logger.error("stripe_webhook_rollback_failed", {
+                message: rollbackError.message,
+                paymentIntentId: paymentIntent.id,
+              });
+            }
+          }
+
+          if (isRetriableDbError(error) && attempt < MAX_WEBHOOK_TX_RETRIES) {
+            logger.warn("stripe_webhook_retry", {
+              event: "stripe_webhook_retry",
+              reason: error.code,
+              paymentIntentId: paymentIntent.id,
+              bookingId,
+              attempt,
+            });
+            await sleep(attempt * 120);
+            continue;
+          }
+
+          throw error;
+        } finally {
+          if (connection) {
+            connection.release();
+          }
+        }
+      }
+
+      if (!committedPayment) {
+        throw new AppError("Unable to process payment webhook safely", 500);
+      }
+
+      const user = await findUserById(committedPayment.user_id);
+      const email = user?.email;
+      await sendBookingPaidEmail({
+        to: email,
+        bookingId: committedPayment.booking_id,
+        amount: committedPayment.amount,
+      });
     } else if (event.type === "payment_intent.payment_failed") {
       const paymentIntent = event.data.object;
       await updatePaymentStatusByIntent(paymentIntent.id, "failed", paymentIntent);

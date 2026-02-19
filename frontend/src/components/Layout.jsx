@@ -18,9 +18,7 @@ export default function Layout({ children }) {
             MALEBANGKOK
           </Link>
           <div className="flex items-center gap-3 text-xs uppercase tracking-[0.14em] sm:gap-5 sm:text-sm">
-            <Link to="/guides">Discovery</Link>
-            <Link to="/booking-flow">Booking</Link>
-            <Link to="/dashboard">Dashboard</Link>
+            <Link to="/">Discovery</Link>
             {!user ? (
               <>
                 <Link to="/login">Login</Link>

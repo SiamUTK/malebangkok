@@ -1,13 +1,14 @@
 const { getGuideById } = require("../models/guideModel");
 const {
-  createBooking,
+  createBookingAtomic,
   getBookingsByUser,
   getBookingById,
-  hasGuideBookingConflict,
   updateBookingStatus,
 } = require("../models/bookingModel");
 const { calculateDynamicPricing } = require("../services/pricingService");
 const { AppError } = require("../middleware/errorMiddleware");
+const { pool } = require("../config/db");
+const logger = require("../config/logger");
 
 const ALLOWED_TRANSITIONS = {
   pending: ["confirmed", "cancelled"],
@@ -15,6 +16,19 @@ const ALLOWED_TRANSITIONS = {
   completed: [],
   cancelled: [],
 };
+
+const MAX_CREATE_BOOKING_TX_ATTEMPTS = 2; // initial try + 1 retry
+const RETRIABLE_DB_ERROR_CODES = new Set(["ER_LOCK_DEADLOCK", "ER_LOCK_WAIT_TIMEOUT"]);
+
+function isRetriableDbError(error) {
+  return RETRIABLE_DB_ERROR_CODES.has(error?.code);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 async function createBookingHandler(req, res, next) {
   try {
@@ -33,16 +47,6 @@ async function createBookingHandler(req, res, next) {
       return res.status(409).json({ message: "Guide is currently unavailable" });
     }
 
-    const hasConflict = await hasGuideBookingConflict({
-      guideId: normalizedGuideId,
-      bookingDate,
-      durationHours: normalizedDurationHours,
-    });
-
-    if (hasConflict) {
-      throw new AppError("Selected time slot is not available", 409);
-    }
-
     const pricing = calculateDynamicPricing({
       basePrice: guide.base_price,
       durationHours: normalizedDurationHours,
@@ -50,18 +54,82 @@ async function createBookingHandler(req, res, next) {
       premiumOptions,
     });
 
-    const bookingId = await createBooking({
-      userId: req.user.id,
+    let bookingId = null;
+
+    // Transaction boundary: acquire one connection and keep all lock/read/write operations on it.
+    for (let attempt = 1; attempt <= MAX_CREATE_BOOKING_TX_ATTEMPTS; attempt += 1) {
+      let connection;
+      try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+
+        bookingId = await createBookingAtomic(
+          {
+            userId: req.user.id,
+            guideId: normalizedGuideId,
+            bookingDate,
+            durationHours: normalizedDurationHours,
+            totalPrice: pricing.totalAmount,
+            baseAmount: pricing.baseAmount,
+            peakAmount: pricing.peakAmount,
+            weekendAmount: pricing.weekendAmount,
+            premiumAmount: pricing.premiumAmount,
+            premiumOptions,
+            notes: notes ? String(notes).trim() : null,
+          },
+          connection
+        );
+
+        await connection.commit();
+        break;
+      } catch (error) {
+        if (connection) {
+          try {
+            await connection.rollback();
+          } catch (rollbackError) {
+            logger.error("create_booking_rollback_failed", {
+              event: "create_booking_rollback_failed",
+              guideId: normalizedGuideId,
+              userId: req.user?.id,
+              message: rollbackError.message,
+            });
+          }
+        }
+
+        if (error?.code === "BOOKING_CONFLICT") {
+          throw new AppError("Selected time slot is not available", 409);
+        }
+
+        if (isRetriableDbError(error) && attempt < MAX_CREATE_BOOKING_TX_ATTEMPTS) {
+          logger.warn("create_booking_retry", {
+            event: "create_booking_retry",
+            guideId: normalizedGuideId,
+            userId: req.user?.id,
+            reason: error.code,
+            attempt,
+          });
+          await sleep(attempt * 100);
+          continue;
+        }
+
+        throw error;
+      } finally {
+        if (connection) {
+          connection.release();
+        }
+      }
+    }
+
+    if (!bookingId) {
+      throw new AppError("Unable to create booking safely", 500);
+    }
+
+    logger.info("booking_created_atomic", {
+      event: "booking_created_atomic",
+      bookingId,
       guideId: normalizedGuideId,
-      bookingDate,
-      durationHours: normalizedDurationHours,
-      totalPrice: pricing.totalAmount,
-      baseAmount: pricing.baseAmount,
-      peakAmount: pricing.peakAmount,
-      weekendAmount: pricing.weekendAmount,
-      premiumAmount: pricing.premiumAmount,
-      premiumOptions,
-      notes: notes ? String(notes).trim() : null,
+      userId: req.user?.id,
+      status: "pending",
     });
 
     return res.status(201).json({

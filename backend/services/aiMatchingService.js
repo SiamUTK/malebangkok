@@ -12,6 +12,8 @@ const DEFAULTS = Object.freeze({
   limit: 20,
 });
 
+const MAX_MATCH_RETURN_LIMIT = 50;
+
 function clamp(value, min, max) {
   if (!Number.isFinite(value)) {
     return min;
@@ -66,7 +68,7 @@ function normalizePreferences(rawPreferences = {}) {
     preferredCity: String(rawPreferences.preferredCity || DEFAULTS.preferredCity).trim(),
     priceSensitivity: clamp(toNumber(rawPreferences.priceSensitivity, DEFAULTS.priceSensitivity), 0, 1),
     ratingWeight: clamp(toNumber(rawPreferences.ratingWeight, DEFAULTS.ratingWeight), 0, 1),
-    limit: clamp(toNumber(rawPreferences.limit, DEFAULTS.limit), 1, 200),
+    limit: clamp(toNumber(rawPreferences.limit, DEFAULTS.limit), 1, MAX_MATCH_RETURN_LIMIT),
   };
 }
 
@@ -296,11 +298,16 @@ function computeMatchScore(guideInput, userPreferencesInput = {}) {
 function rankGuidesForUser(userPreferencesInput = {}, guidesInput = []) {
   const preferences = normalizePreferences(userPreferencesInput);
   const guides = Array.isArray(guidesInput) ? guidesInput : [];
+  const hardLimit = clamp(preferences.limit, 1, MAX_MATCH_RETURN_LIMIT);
 
   const scored = [];
 
   for (let index = 0; index < guides.length; index += 1) {
     const rawGuide = guides[index];
+    if (!rawGuide || typeof rawGuide !== "object") {
+      continue;
+    }
+
     const normalizedGuide = normalizeGuide(rawGuide);
     const { matchScore, matchBreakdown } = computeMatchScore(normalizedGuide, preferences);
 
@@ -328,7 +335,7 @@ function rankGuidesForUser(userPreferencesInput = {}, guidesInput = []) {
     return (a.id || 0) - (b.id || 0);
   });
 
-  const limited = scored.slice(0, preferences.limit).map(({ __index, ...guide }) => guide);
+  const limited = scored.slice(0, hardLimit).map(({ __index, ...guide }) => guide);
   return limited;
 }
 

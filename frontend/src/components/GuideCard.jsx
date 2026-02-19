@@ -1,4 +1,4 @@
-import { Banknote, Calendar, Heart, Shield, TrendingUp } from "lucide-react";
+import { Banknote, Calendar, Heart, Loader2, Shield, TrendingUp } from "lucide-react";
 import { useState } from "react";
 import RatingStars from "./RatingStars";
 import VerifiedBadge from "./VerifiedBadge";
@@ -9,7 +9,7 @@ const priceFormatter = new Intl.NumberFormat("th-TH", {
   maximumFractionDigits: 0,
 });
 
-export default function GuideCard({ guide, onSelect }) {
+export default function GuideCard({ guide, onSelect, onBook, isNavigating = false }) {
   const {
     id,
     name,
@@ -193,15 +193,23 @@ export default function GuideCard({ guide, onSelect }) {
         {/* Call-to-Action Indicator */}
         <div className="text-right">
           <p className="text-xs uppercase tracking-[0.08em] text-zinc-400 font-medium">View Profile</p>
-          <p
-            className={`mt-2 text-sm font-semibold transition-all duration-300 ${
-              isHovered ? "text-amber-300" : "text-zinc-300"
-            }`}
-          >
-            →
+          <p className={`mt-2 text-sm font-semibold transition-all duration-300 ${isHovered ? "text-amber-300" : "text-zinc-300"}`}>
+            {isNavigating ? <Loader2 className="h-4 w-4 animate-spin" /> : "→"}
           </p>
         </div>
       </div>
+
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onBook?.(id);
+        }}
+        disabled={isNavigating}
+        className="mt-4 w-full rounded-xl border border-amber-400/40 bg-amber-400/10 px-4 py-2 text-sm font-semibold text-amber-300 transition hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-70"
+      >
+        {isNavigating ? "Opening..." : "Book this guide"}
+      </button>
 
       {/* Hover CTA Overlay */}
       {isHovered && (

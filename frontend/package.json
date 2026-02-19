@@ -10,6 +10,8 @@
     "build:hostinger": "vite build --outDir ../backend/public --emptyOutDir"
   },
   "dependencies": {
+    "@stripe/react-stripe-js": "^2.9.0",
+    "@stripe/stripe-js": "^4.10.0",
     "axios": "^1.11.0",
     "lucide-react": "^0.542.0",
     "react": "^18.3.1",
