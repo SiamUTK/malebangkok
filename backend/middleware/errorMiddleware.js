@@ -1,5 +1,38 @@
 const logger = require("../config/logger");
-const { sendCriticalAlert } = require("../services/alertService");
+const { sendCriticalAlert, sendHighAlert } = require("../services/alertService");
+
+const ERROR_BURST_WINDOW_MS = Number(process.env.ERROR_BURST_WINDOW_MS) || 60 * 1000;
+const ERROR_BURST_THRESHOLD = Number(process.env.ERROR_BURST_THRESHOLD) || 25;
+const ERROR_BURST_ALERT_COOLDOWN_MS = Number(process.env.ERROR_BURST_ALERT_COOLDOWN_MS) || 5 * 60 * 1000;
+
+const errorWindow = [];
+let lastBurstAlertAt = 0;
+
+function trackServerErrorBurst(requestContext) {
+  const now = Date.now();
+  errorWindow.push(now);
+
+  while (errorWindow.length > 0 && now - errorWindow[0] > ERROR_BURST_WINDOW_MS) {
+    errorWindow.shift();
+  }
+
+  if (
+    errorWindow.length >= ERROR_BURST_THRESHOLD &&
+    now - lastBurstAlertAt >= ERROR_BURST_ALERT_COOLDOWN_MS
+  ) {
+    lastBurstAlertAt = now;
+    Promise.resolve(
+      sendHighAlert({
+        event: "high_error_rate_burst",
+        title: "High API error rate detected",
+        message: `5xx threshold exceeded: ${errorWindow.length} in ${ERROR_BURST_WINDOW_MS}ms`,
+        path: requestContext.path,
+        method: requestContext.method,
+        requestId: requestContext.requestId,
+      })
+    ).catch(() => {});
+  }
+}
 
 class AppError extends Error {
   constructor(message, statusCode = 500, details = null) {
@@ -34,22 +67,47 @@ function errorHandler(err, req, res, next) {
   });
 
   if (statusCode >= 500) {
-    Promise.resolve(
-      sendCriticalAlert({
-        requestId: req.requestId || null,
-        statusCode,
-        method: req.method,
-        path: req.originalUrl,
-        message: err.message,
-        userId: req.user?.id || null,
-        ip: req.ip || null,
-      })
-    ).catch((alertError) => {
-      logger.error("critical_alert_dispatch_failed", {
-        requestId: req.requestId || null,
-        message: alertError.message,
-      });
+    trackServerErrorBurst({
+      path: req.originalUrl,
+      method: req.method,
+      requestId: req.requestId || null,
     });
+
+    const shouldEscalateCritical = !err.isOperational || statusCode >= 503;
+    if (shouldEscalateCritical) {
+      Promise.resolve(
+        sendCriticalAlert({
+          event: "http_server_error",
+          title: "Server error response",
+          requestId: req.requestId || null,
+          statusCode,
+          method: req.method,
+          path: req.originalUrl,
+          message: err.message,
+          userId: req.user?.id || null,
+          ip: req.ip || null,
+        })
+      ).catch((alertError) => {
+        logger.error("critical_alert_dispatch_failed", {
+          requestId: req.requestId || null,
+          message: alertError.message,
+        });
+      });
+    }
+
+    if (!shouldEscalateCritical) {
+      Promise.resolve(
+        sendHighAlert({
+          event: "http_operational_5xx",
+          title: "Operational 5xx observed",
+          requestId: req.requestId || null,
+          statusCode,
+          method: req.method,
+          path: req.originalUrl,
+          message: err.message,
+        })
+      ).catch(() => {});
+    }
   }
 
   if (!isProduction) {

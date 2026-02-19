@@ -7,6 +7,11 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
+    "worker": "node workers/index.js",
+    "worker:guide": "node workers/guideStatsWorker.js",
+    "worker:analytics": "node workers/analyticsWorker.js",
+    "worker:reconciliation": "node workers/reconciliationWorker.js",
+    "worker:notification": "node workers/notificationWorker.js",
     "db:schema": "node -e \"const fs=require('fs'); console.log(fs.readFileSync('./config/schema.sql','utf8'))\"",
     "health": "node -e \"fetch('http://localhost:'+(process.env.PORT||5000)+'/api/health').then(r=>r.text()).then(console.log).catch(console.error)\""
   },
@@ -15,6 +20,7 @@
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
+    "bullmq": "^5.10.4",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.1.0",

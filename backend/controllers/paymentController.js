@@ -13,6 +13,13 @@ const {
 } = require("../services/paymentIdempotencyService");
 const { createOrReusePaymentIntentAtomic } = require("../services/paymentIntentService");
 const { findUserById } = require("../models/userModel");
+const { sendHighAlert, sendWarning } = require("../services/alertService");
+const {
+  enqueueGuideStatsUpdate,
+  enqueueAnalyticsEvent,
+  enqueueReconciliationRun,
+  enqueueEmailNotification,
+} = require("../services/jobProducerService");
 
 const MAX_WEBHOOK_TX_RETRIES = 3;
 const RETRIABLE_DB_ERROR_CODES = new Set(["ER_LOCK_DEADLOCK", "ER_LOCK_WAIT_TIMEOUT"]);
@@ -294,6 +301,20 @@ async function stripeWebhookHandler(req, res, next) {
       }
 
       if (!committedPayment) {
+        Promise.resolve(
+          sendHighAlert({
+            event: "payment_anomaly_uncommitted",
+            title: "Payment anomaly: webhook could not commit",
+            message: "payment_intent.succeeded received but commit did not complete safely",
+            requestId: req.requestId || null,
+            path: req.originalUrl,
+            method: req.method,
+            details: {
+              paymentIntentId: paymentIntent.id,
+              bookingId,
+            },
+          })
+        ).catch(() => {});
         throw new AppError("Unable to process payment webhook safely", 500);
       }
 
@@ -304,14 +325,107 @@ async function stripeWebhookHandler(req, res, next) {
         bookingId: committedPayment.booking_id,
         amount: committedPayment.amount,
       });
+
+      Promise.resolve(
+        enqueueGuideStatsUpdate(committedPayment.guide_id, {
+          idempotencyKey: `payment-succeeded:${paymentIntent.id}:guide:${committedPayment.guide_id}`,
+          correlationId: req.requestId || null,
+          source: "payment_webhook",
+        })
+      ).catch(() => {});
+
+      Promise.resolve(
+        enqueueAnalyticsEvent(
+          {
+            userId: committedPayment.user_id,
+            eventType: "booking_completed",
+            guideId: String(committedPayment.guide_id),
+            metadata: {
+              bookingId: committedPayment.booking_id,
+              paymentIntentId: paymentIntent.id,
+              amount: committedPayment.amount,
+            },
+          },
+          {
+            idempotencyKey: `booking-completed:${committedPayment.booking_id}`,
+            correlationId: req.requestId || null,
+          }
+        )
+      ).catch(() => {});
+
+      if (email) {
+        Promise.resolve(
+          enqueueEmailNotification(
+            {
+              channel: "email",
+              to: email,
+              template: "booking-paid-confirmation",
+              data: {
+                bookingId: committedPayment.booking_id,
+                amount: committedPayment.amount,
+              },
+              messageId: `booking-paid:${committedPayment.booking_id}`,
+            },
+            {
+              correlationId: req.requestId || null,
+            }
+          )
+        ).catch(() => {});
+      }
+
+      Promise.resolve(
+        enqueueReconciliationRun({
+          idempotencyKey: `webhook-success:${paymentIntent.id}`,
+          lookbackHours: 6,
+          trigger: "webhook_success",
+          correlationId: req.requestId || null,
+        })
+      ).catch(() => {});
     } else if (event.type === "payment_intent.payment_failed") {
       const paymentIntent = event.data.object;
       await updatePaymentStatusByIntent(paymentIntent.id, "failed", paymentIntent);
+
+      Promise.resolve(
+        enqueueReconciliationRun({
+          idempotencyKey: `webhook-failed:${paymentIntent.id}`,
+          lookbackHours: 12,
+          trigger: "webhook_failed",
+          correlationId: req.requestId || null,
+        })
+      ).catch(() => {});
+
+      Promise.resolve(
+        sendWarning({
+          event: "payment_intent_failed",
+          title: "Payment intent failed",
+          message: paymentIntent.last_payment_error?.message || "Stripe payment intent failed",
+          requestId: req.requestId || null,
+          path: req.originalUrl,
+          method: req.method,
+          statusCode: 402,
+          details: {
+            paymentIntentId: paymentIntent.id,
+            bookingId: paymentIntent.metadata?.bookingId || null,
+            errorCode: paymentIntent.last_payment_error?.code || null,
+          },
+        })
+      ).catch(() => {});
     }
 
     return res.status(200).json({ received: true });
   } catch (error) {
     logger.error("Stripe webhook failed", { message: error.message });
+    Promise.resolve(
+      sendHighAlert({
+        event: "webhook_processing_failed",
+        title: "Stripe webhook processing failed",
+        message: error.message,
+        requestId: req.requestId || null,
+        path: req.originalUrl,
+        method: req.method,
+        code: error.code || null,
+      })
+    ).catch(() => {});
     return next(error);
   }
 }

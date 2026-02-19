@@ -8,7 +8,8 @@ const xssSanitizer = require("express-xss-sanitizer");
 
 const { checkDatabaseConnection } = require("./config/db");
 const logger = require("./config/logger");
-const { getHealth } = require("./controllers/healthController");
+const { sendCriticalAlert } = require("./services/alertService");
+const { getHealth, getLiveness } = require("./controllers/healthController");
 const authRoutes = require("./routes/authRoutes");
 const guideRoutes = require("./routes/guideRoutes");
 const bookingRoutes = require("./routes/bookingRoutes");
@@ -99,6 +100,8 @@ app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 app.use(hpp());
 app.use(xssSanitizer());
 app.get("/api/health", getHealth);
+app.get("/api/health/live", getLiveness);
+app.get("/api/health/ready", getHealth);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/guides", guideRoutes);
@@ -130,5 +133,14 @@ app.listen(port, async () => {
     logger.info("server_started", { port, environment: nodeEnv });
   } catch (error) {
     logger.error("database_check_failed", { message: error.message });
+    Promise.resolve(
+      sendCriticalAlert({
+        event: "database_check_failed",
+        title: "Database connectivity failed during startup",
+        message: error.message,
+        path: "startup",
+        code: error.code || null,
+      })
+    ).catch(() => {});
   }
 });

@@ -1,5 +1,6 @@
 const Redis = require("ioredis");
 const logger = require("./logger");
+const { sendWarning } = require("../services/alertService");
 
 const REDIS_CONNECT_TIMEOUT_MS = Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 5000);
 const REDIS_COMMAND_TIMEOUT_MS = Number(process.env.REDIS_COMMAND_TIMEOUT_MS || 2000);
@@ -74,6 +75,15 @@ redis.on("error", (error) => {
       event: "redis_unavailable_fail_open",
       message: error.message,
     });
+
+    Promise.resolve(
+      sendWarning({
+        event: "redis_unavailable",
+        title: "Redis unavailable - running in fail-open mode",
+        message: error.message,
+        code: error.code || null,
+      })
+    ).catch(() => {});
     return;
   }
 

@@ -9,6 +9,11 @@ const { calculateDynamicPricing } = require("../services/pricingService");
 const { AppError } = require("../middleware/errorMiddleware");
 const { pool } = require("../config/db");
 const logger = require("../config/logger");
+const { sendWarning } = require("../services/alertService");
+const {
+  enqueueGuideStatsUpdate,
+  enqueueAnalyticsEvent,
+} = require("../services/jobProducerService");
 
 const ALLOWED_TRANSITIONS = {
   pending: ["confirmed", "cancelled"],
@@ -97,6 +102,21 @@ async function createBookingHandler(req, res, next) {
         }
 
         if (error?.code === "BOOKING_CONFLICT") {
+          Promise.resolve(
+            sendWarning({
+              event: "booking_conflict_detected",
+              title: "Booking conflict detected",
+              message: "Concurrent booking conflict blocked by atomic booking guard",
+              requestId: req.requestId || null,
+              path: req.originalUrl,
+              method: req.method,
+              statusCode: 409,
+              details: {
+                guideId: normalizedGuideId,
+                userId: req.user?.id || null,
+              },
+            })
+          ).catch(() => {});
           throw new AppError("Selected time slot is not available", 409);
         }
 
@@ -131,6 +151,32 @@ async function createBookingHandler(req, res, next) {
       userId: req.user?.id,
       status: "pending",
     });
+
+    Promise.resolve(
+      enqueueGuideStatsUpdate(normalizedGuideId, {
+        idempotencyKey: `booking-created:${bookingId}:guide:${normalizedGuideId}`,
+        correlationId: req.requestId || null,
+        source: "booking_controller",
+      })
+    ).catch(() => {});
+
+    Promise.resolve(
+      enqueueAnalyticsEvent(
+        {
+          userId: req.user.id,
+          eventType: "booking_started",
+          guideId: String(normalizedGuideId),
+          metadata: {
+            bookingId,
+            totalPrice: pricing.totalAmount,
+          },
+        },
+        {
+          idempotencyKey: `booking-started:${bookingId}`,
+          correlationId: req.requestId || null,
+        }
+      )
+    ).catch(() => {});
 
     return res.status(201).json({
       message: "Booking created in pending status",
