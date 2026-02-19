@@ -116,7 +116,7 @@ app.use("/api/admin", adminRoutes);
 const publicDir = path.join(__dirname, "public");
 app.use(express.static(publicDir));
 
-app.get("*", (req, res, next) => {
+app.get("/{*path}", (req, res, next) => {
   if (req.path.startsWith("/api")) {
     return next();
   }
